@@ -3,12 +3,15 @@ import numpy as np
 import multiprocessing as mp
 import time
 import statistics
+import pandas as pd
 from skimage.measure import label, regionprops
 from skimage.transform import hough_circle, hough_circle_peaks
 
+distance_dict = {}
+
 video_path = "./Traditional_IR_Filtering/Videos/video_15_out.avi"
 #video_path = "./Traditional_IR_Filtering/Videos/video_10metres.mp4"
-#video_path = "./Traditional_IR_Filtering/Videos/video_20metres_out.avi"
+#video_path = "./Traditional_IR_Filtering/Videos/video_20metres_out.avi"Traditional_IR_Filtering
 
 cap = cv2.VideoCapture(video_path)
 
@@ -110,10 +113,114 @@ def display_frames(frame_queue, segmented_queue):
     
     cv2.destroyAllWindows()
 
+def get_pixel_data(image):
+    """Gather data about the white pixels from each segmented image."""
+
+    #Counts the number of white pixels
+    pixel_count = cv2.countNonZero(image)
+    eccentricity = 0.0
+    
+    #Normalizes the image
+    image[image != 0] = 255
+    norm_img = image // 255 
+    
+    #Extracts the eccentricity of each frame
+    labeled_image = label(norm_img)
+    for region in regionprops(labeled_image):
+        eccentricity = region.eccentricity
+    
+    count = 0
+    max_row_count = 0
+    max_column_count = 0
+    longest_row = []
+    longest_column = []
+    
+    #Extracts the longest uninterrupted horizontal and vertical
+    #chain of white pixels from each segmented image frame
+    for row in norm_img:
+        count = np.count_nonzero(row)
+        if count > max_row_count:
+            longest_row = row
+            max_row_count = count
+        for i in range(len(row)):
+            if row[i] == 1:
+                column = norm_img[:,i]
+                count = np.count_nonzero(column)
+                if count > max_column_count:
+                    longest_column = column
+                    max_column_count = count
+    
+    return (pixel_count, eccentricity, max_row_count, max_column_count)
+
+def get_distance_from_path(video_path):
+    """Extracts the distance from the video filename."""
+
+    if "10metres" in video_path:
+        return "10m"
+    elif "15metres" in video_path or "15_out" in video_path:
+        return "15m"
+    elif "20metres" in video_path or "20_out" in video_path:
+        return "20m"
+    return "unknown"  # Default case
+
+    
+def store_pixel_data(distance, pix_counts, eccentricities, longest_rows, 
+                     longest_columns):
+    """Store the data collected from the segmented image frames."""
+    
+    data_dict["Distance"] = distance
+    data_dict["Pixel Counts"] = pix_counts
+    data_dict["Eccentricities"] = eccentricities
+    data_dict["Longest Rows"] = longest_rows
+    data_dict["Longest Columns"] = longest_columns
+
+
+def write_to_csv(distance, data_dict):
+   """Writes the collected data to a csv file."""
+    #Runs the code if the file exists
+    try:
+        with open('img_data.csv', 'r', newline='') as csv_file:
+            add_condition = True
+            no_header = False
+
+            #Checks if there is a header in the file
+            header = csv_file.readline()
+            if len(header) == 0:
+                no_header = True
+            
+            #Checks if there already exists pixel data for a specific distance
+            else:
+                header = ["Distance", "Pixel Counts", "Eccentricities", "Longest Rows", "Longest Columns"]
+                reader = csv.DictReader(csv_file, fieldnames=header)
+                for row in reader:
+                    if data_dict == row:
+                        add_condition = False
+                        break
+        
+        #Adds a header if there is none
+        if (no_header):
+            csv_file = open('img_data.csv', mode='w')
+            header = ["Distance", "Pixel Counts", "Eccentricities", "Longest Rows", "Longest Columns"]
+            writer = csv.writer(csv_file)
+            writer.writerow(header)
+
+        #Appends pixel data for a specific distance if it does not exist in the csv already       
+        if (add_condition):
+            with open('img_data.csv', 'a', newline='') as csv_file:
+                fieldnames = ["Distance", "Pixel Counts", "Eccentricities", "Longest Rows", 
+                          "Longest Columns"]
+                writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+                writer.writerow(data_dict)
+    
+    except FileNotFoundError:
+        print("File not found.")
+    
+    csv_file.close()
+    
+    
 
 def main():
     """Reads frames and processes them using multiprocessing with buffering."""
-    
     frame_queue = mp.Queue(maxsize=FRAME_BUFFER_SIZE)
     segmented_queue = mp.Queue(maxsize=FRAME_BUFFER_SIZE)
     processing_times = []
@@ -123,6 +230,12 @@ def main():
     display_process = mp.Process(target=display_frames, args=(frame_queue, segmented_queue), daemon=True)
     display_process.start()
     
+    pixel_counts = "" #String of white pixel counts from each 
+    longest_rows = ""
+    longest_columns = ""
+    eccentricities = "" #String of eccentricities from each segmented image frame.
+    
+
     results = []
     frame_count = 0
     while cap.isOpened():
@@ -139,6 +252,10 @@ def main():
         if len(results) >= FRAME_BUFFER_SIZE:
             for res in results[:FRAME_BUFFER_SIZE]:
                 frame_display, segmented_image, processing_time = res.get()
+                pixel_counts += str(get_pixel_data(segmented_image)[0]) + ' '
+                eccentricities += str(get_pixel_data(segmented_image)[1]) + ' '
+                longest_rows += str(get_pixel_data(segmented_image)[2]) + ' '
+                longest_columns += str(get_pixel_data(segmented_image)[3]) + ' '
                 frame_queue.put(frame_display)
                 segmented_queue.put(segmented_image)
                 processing_times.append(processing_time)
@@ -147,10 +264,15 @@ def main():
     # Process remaining frames
     for res in results:
         frame_display, segmented_image, processing_time = res.get()
+        pixel_counts + str(get_pixel_data(segmented_image)[0]) + ' '
+        eccentricities + str(get_pixel_data(segmented_image)[1]) + ' '
+        longest_rows + str(get_pixel_data(segmented_image)[2]) + ' '
+        longest_columns + str(get_pixel_data(segmented_image)[3]) + ' '
         frame_queue.put(frame_display)
         segmented_queue.put(segmented_image)
         processing_times.append(processing_time)
     
+   
     # Stop the display process
     frame_queue.put(None)
     segmented_queue.put(None)
@@ -159,12 +281,18 @@ def main():
     cap.release()
     pool.close()
     pool.join()
+
+    distance = get_distance_from_path(video_path)
+
+    #Store the pixel data and write it to a csv file
+    store_pixel_data(distance, pixel_counts, eccentricities, longest_rows, longest_columns)
+    write_to_csv(distance, data_dict)
+    
     
     # Compute and print the average frame processing time
     if processing_times:
         avg_time = statistics.mean(processing_times)
         print(f"Average frame processing time: {avg_time:.4f} seconds")
-
 
 if __name__ == "__main__":
     main()
